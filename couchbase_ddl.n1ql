@@ -1,0 +1,300 @@
+-- ============================================================================
+--  Couchbase DDL — Project Part-3 (Tabungan BRI)
+-- ============================================================================
+--  Bucket   : bri_tabungan
+--  Scope    : operasional
+--
+--  Source of truth:
+--    - part-1/findings/09-part1c-tabungan-bri-entities.md   (ER model)
+--    - part-1/findings/10-part1c-data-dictionary.md         (attributes)
+--    - part-2/ddl_bri.sql                                    (relational DDL,
+--      implemented physical schema — Part-3 data must be equivalent to this)
+--    - part-3/PLAN.md §3–§5                                   (NoSQL design)
+--
+--  Scope of this file: COUCHBASE ONLY. The transaction ledger
+--  (Transaksi_Tabungan) is NOT here — per the plan it lives in Cassandra
+--  (keyspace bri_ledger, table transaksi_by_rekening /
+--  transaksi_by_kanal_periode), because it is a high-volume, append-only,
+--  time-ordered workload that Couchbase documents are a poor fit for.
+--  Pemegang_Rekening (the M:N holder relationship) is embedded inside
+--  `rekening` rather than being its own collection.
+--
+--  Run with `cbq` / the Couchbase Query Workbench, in order, top to bottom.
+-- ============================================================================
+
+
+-- ----------------------------------------------------------------------------
+-- 0. BUCKET
+--    A bucket is a cluster-level resource, not a N1QL object — create it once
+--    via the CLI, REST Admin API, or Web Console *before* running this file.
+-- ----------------------------------------------------------------------------
+-- couchbase-cli bucket-create \
+--   --cluster        localhost:8091 \
+--   --username       Administrator \
+--   --password       <password> \
+--   --bucket         bri_tabungan \
+--   --bucket-type    couchbase \
+--   --bucket-ramsize 512 \
+--   --bucket-replica 0 \
+--   --wait
+
+
+-- ----------------------------------------------------------------------------
+-- 1. SCOPE
+-- ----------------------------------------------------------------------------
+CREATE SCOPE `bri_tabungan`.`operasional` IF NOT EXISTS;
+
+
+-- ----------------------------------------------------------------------------
+-- 2. COLLECTIONS
+--    10 relational entities -> 8 Couchbase collections:
+--      - Pemegang_Rekening (M:N)   -> embedded array inside `rekening`
+--      - Transaksi_Tabungan         -> Cassandra (out of scope here)
+-- ----------------------------------------------------------------------------
+CREATE COLLECTION `bri_tabungan`.`operasional`.`produk`             IF NOT EXISTS;
+CREATE COLLECTION `bri_tabungan`.`operasional`.`unit_kerja`         IF NOT EXISTS;
+CREATE COLLECTION `bri_tabungan`.`operasional`.`kanal`              IF NOT EXISTS;
+CREATE COLLECTION `bri_tabungan`.`operasional`.`nasabah`            IF NOT EXISTS;
+CREATE COLLECTION `bri_tabungan`.`operasional`.`rekening`           IF NOT EXISTS;
+CREATE COLLECTION `bri_tabungan`.`operasional`.`kartu_debit`        IF NOT EXISTS;
+CREATE COLLECTION `bri_tabungan`.`operasional`.`posting_bunga`      IF NOT EXISTS;
+CREATE COLLECTION `bri_tabungan`.`operasional`.`instruksi_terjadwal` IF NOT EXISTS;
+
+
+-- ----------------------------------------------------------------------------
+-- 3. PRIMARY INDEXES
+--    Only for the small, rarely-filtered reference collections, so any ad-hoc
+--    N1QL against them still works. Deliberately NOT created on the large,
+--    high-traffic collections (nasabah, rekening, kartu_debit, posting_bunga,
+--    instruksi_terjadwal): those are served exclusively by the targeted GSIs
+--    in §5, so an unindexed/un-anticipated query fails loudly (missing index)
+--    instead of silently full-scanning at benchmark time.
+-- ----------------------------------------------------------------------------
+CREATE PRIMARY INDEX idx_primary_produk     ON `bri_tabungan`.`operasional`.`produk`;
+CREATE PRIMARY INDEX idx_primary_unit_kerja ON `bri_tabungan`.`operasional`.`unit_kerja`;
+CREATE PRIMARY INDEX idx_primary_kanal      ON `bri_tabungan`.`operasional`.`kanal`;
+
+-- Dev/debug convenience only — leave OUT of the benchmarked/graded run:
+-- CREATE PRIMARY INDEX idx_primary_nasabah            ON `bri_tabungan`.`operasional`.`nasabah`;
+-- CREATE PRIMARY INDEX idx_primary_rekening           ON `bri_tabungan`.`operasional`.`rekening`;
+-- CREATE PRIMARY INDEX idx_primary_kartu_debit        ON `bri_tabungan`.`operasional`.`kartu_debit`;
+-- CREATE PRIMARY INDEX idx_primary_posting_bunga      ON `bri_tabungan`.`operasional`.`posting_bunga`;
+-- CREATE PRIMARY INDEX idx_primary_instruksi_terjadwal ON `bri_tabungan`.`operasional`.`instruksi_terjadwal`;
+
+
+-- ----------------------------------------------------------------------------
+-- 4. UNIQUENESS GSIs
+--    Mirrors the relational UNIQUE constraints that are not already satisfied
+--    by the document key.
+-- ----------------------------------------------------------------------------
+CREATE UNIQUE INDEX idx_nasabah_nik ON `bri_tabungan`.`operasional`.`nasabah`(nik);
+                                    -- <-> nasabah.nik UNIQUE (ddl_bri.sql L48)
+
+CREATE INDEX idx_produk_nama ON `bri_tabungan`.`operasional`.`produk`(nama_produk);
+                                    -- <-> produk_tabungan.nama_produk UNIQUE (L6)
+
+CREATE INDEX idx_kanal_nama ON `bri_tabungan`.`operasional`.`kanal`(nama_kanal);
+                                    -- <-> kanal_layanan.nama_kanal UNIQUE (L38)
+
+
+-- ----------------------------------------------------------------------------
+-- 5. QUERY-DRIVEN GSIs — one (or more) per Part-2 query Couchbase serves.
+--    See PLAN.md §4 for the full R-/W- -> engine mapping.
+-- ----------------------------------------------------------------------------
+
+-- R-02  Nasabah dengan >1 rekening aktif, beserta total saldo
+--       (UNNEST rekening.pemegang_rekening, GROUP BY id_nasabah, HAVING COUNT>1)
+CREATE INDEX idx_rek_holder ON `bri_tabungan`.`operasional`.`rekening`(
+    DISTINCT ARRAY h.id_nasabah FOR h IN pemegang_rekening END
+  )
+  WHERE status_rekening = 'AKTIF';
+
+-- R-04  Rekening tanpa transaksi > 90 hari
+--       last_transaction_at adalah field turunan, dijaga oleh write path W-07
+CREATE INDEX idx_rek_idle ON `bri_tabungan`.`operasional`.`rekening`(
+    status_rekening, last_transaction_at, saldo_efektif
+  );
+
+-- R-05  Nasabah yang belum memiliki rekening
+--       rekening_refs adalah array turunan pada dokumen nasabah (lihat §6)
+CREATE INDEX idx_nasabah_tanpa_rekening ON `bri_tabungan`.`operasional`.`nasabah`(
+    id_nasabah
+  )
+  WHERE ARRAY_LENGTH(rekening_refs) = 0 OR rekening_refs IS MISSING;
+
+-- R-06  Rekap jumlah rekening & total saldo per unit kerja
+CREATE INDEX idx_rek_unit ON `bri_tabungan`.`operasional`.`rekening`(
+    id_unit_kerja, status_rekening, saldo_efektif
+  );
+
+-- R-07  Riwayat posting bunga per rekening, diurutkan per periode
+CREATE INDEX idx_posting_rek ON `bri_tabungan`.`operasional`.`posting_bunga`(
+    no_rekening, periode
+  );
+
+-- R-08  Instruksi terjadwal yang masih aktif
+CREATE INDEX idx_instr_aktif ON `bri_tabungan`.`operasional`.`instruksi_terjadwal`(
+    status_instruksi, tanggal_selesai
+  );
+
+-- R-09  Kartu debit yang akan kedaluwarsa dalam 30 hari
+CREATE INDEX idx_kartu_expiry ON `bri_tabungan`.`operasional`.`kartu_debit`(
+    status_kartu, tanggal_kadaluarsa
+  );
+
+-- R-10  Distribusi jumlah/saldo rekening per produk
+CREATE INDEX idx_rek_produk ON `bri_tabungan`.`operasional`.`rekening`(
+    id_produk, status_rekening
+  );
+
+-- W-06  Blokir kartu — mencari kartu lewat no_rekening (no_kartu adalah document
+--       key, tapi "kartu milik rekening X" bukan lookup by key)
+CREATE INDEX idx_kartu_rekening ON `bri_tabungan`.`operasional`.`kartu_debit`(
+    no_rekening
+  );
+
+-- Mendukung penjelajahan hierarki unit kerja (self-reference, roll-up laporan)
+CREATE INDEX idx_unit_induk ON `bri_tabungan`.`operasional`.`unit_kerja`(
+    id_unit_induk
+  );
+
+
+-- ============================================================================
+-- 6. LOGICAL DOCUMENT SCHEMA (reference — Couchbase does not enforce this at
+--    the database level; it documents the shape the application must write,
+--    equivalent to the relational columns/CHECK constraints in ddl_bri.sql).
+-- ============================================================================
+
+-- ---- `produk` -----------------------------------------------------------
+-- key: produk::<id_produk>
+-- {
+--   "_type"           : "produk",
+--   "id_produk"        : "P001",                 // string, <=10, PK (<-> doc key)
+--   "nama_produk"      : "BritAma",               // string, <=50, UNIQUE
+--   "keluarga_produk"  : "BRITAMA",                // enum: BRITAMA|JUNIO|SIMUDA|HAJI|SIMPEDES|SIMPEL|TABUNGANKU
+--   "segmen_tujuan"    : "UMUM",                   // enum: UMUM|ANAK|PELAJAR|TKI|MITRA|PRIORITAS|DHE
+--   "mata_uang"        : "IDR",
+--   "saldo_minimum"    : 50000.00,                 // numeric(18,2), >= 0
+--   "skema_bunga"      : "TIER",                   // enum: FLAT|TIER
+--   "biaya_admin"      : 12000.00,                 // numeric(18,2), >= 0
+--   "status_produk"    : "AKTIF"                   // enum: AKTIF|TIDAK_DIPASARKAN
+-- }
+
+-- ---- `unit_kerja` --------------------------------------------------------
+-- key: unit_kerja::<id_unit_kerja>
+-- {
+--   "_type"           : "unit_kerja",
+--   "id_unit_kerja"    : "U001",                   // string, <=10, PK
+--   "nama_unit_kerja"  : "KC Jakarta Sudirman",
+--   "jenis_unit_kerja" : "CABANG",                 // enum: HO|RO|CABANG|SUB_CABANG|UNIT|CASH_OFFICE|BRI_TERRACE
+--   "alamat_lokasi"    : "Jl. Jend. Sudirman No. 1",
+--   "id_unit_induk"    : "U000"                    // reference -> unit_kerja (self); null for HO; must differ from own id
+-- }
+
+-- ---- `kanal` ---------------------------------------------------------
+-- key: kanal::<id_kanal>
+-- {
+--   "_type"           : "kanal",
+--   "id_kanal"         : "K01",                    // string, <=10, PK
+--   "nama_kanal"       : "BRImo",                   // string, <=30, UNIQUE
+--   "tipe_kanal"       : "DIGITAL",                 // enum: DIGITAL|SELF_SERVICE|TELLER_UNIT|AGENT|MERCHANT
+--   "status_operasional": "ONLINE"                  // enum: ONLINE|OFFLINE|MAINTENANCE
+-- }
+
+-- ---- `nasabah` -----------------------------------------------------------
+-- key: nasabah::<id_nasabah>
+-- {
+--   "_type"             : "nasabah",
+--   "id_nasabah"         : "N000001",               // string, <=12, PK
+--   "nik"                : "3201012345670001",      // string, <=20, UNIQUE; 16-digit if INDIVIDU
+--   "nama_lengkap"       : "Siti Nurhaliza",
+--   "jenis_nasabah"      : "INDIVIDU",              // enum: INDIVIDU|KORPORASI|LEMBAGA
+--   "segmen_nasabah"     : "RITEL",                 // enum: MIKRO_UMI|RITEL|KORPORASI|PRIORITAS|PRIVATE
+--   "status_kyc"         : "TERVERIFIKASI",         // enum: TERVERIFIKASI|MENUNGGU_VERIFIKASI|DITOLAK|PERLU_REKYC
+--   "tanggal_registrasi" : "2023-05-10",            // date, <= today
+--   "rekening_refs"      : [                        // EMBEDDED, denormalized — fast R-05 (anti-join avoidance)
+--     { "no_rekening": "RKG00000001", "peran": "PEMEGANG_UTAMA", "penanda_utama": "Y" }
+--   ]
+-- }
+
+-- ---- `rekening` ------------------------------------------------------
+-- key: rekening::<no_rekening>
+-- {
+--   "_type"            : "rekening",
+--   "no_rekening"       : "RKG00000001",            // string, <=15, PK
+--   "id_produk"         : "P001",                   // REFERENCE -> produk
+--   "mata_uang"         : "IDR",                     // char(3)
+--   "tanggal_buka"      : "2023-05-10",              // date, <= today
+--   "tanggal_tutup"     : null,                      // date, null unless status = DITUTUP; must be >= tanggal_buka
+--   "status_rekening"   : "AKTIF",                   // enum: AKTIF|DORMAN|TERBLOKIR|DITUTUP
+--   "saldo_efektif"     : 4250000.00,                // numeric(18,2), >= 0
+--   "saldo_tersedia"    : 4250000.00,                // numeric(18,2), 0 <= saldo_tersedia <= saldo_efektif
+--   "id_unit_kerja"     : "U001",                    // REFERENCE -> unit_kerja
+--   "pemegang_rekening" : [                          // EMBEDDED — Pemegang_Rekening (M:N), aggregate boundary
+--     { "id_nasabah": "N000001", "peran": "PEMEGANG_UTAMA", "penanda_utama": "Y", "tanggal_mulai": "2023-05-10" }
+--   ],
+--   "last_transaction_at": "2026-11-10T08:30:00Z",   // DERIVED — maintained by write path (W-07), serves R-04
+--   "tx_count"           : 142,                      // DERIVED, optional — running counter, for analytics only
+--   "last_balance"        : 4250000.00                // DERIVED, optional — mirrors saldo_efektif at last post
+-- }
+
+-- ---- `kartu_debit` --------------------------------------------------
+-- key: kartu_debit::<no_kartu>
+-- {
+--   "_type"             : "kartu_debit",
+--   "no_kartu"           : "4000123456789012",       // string, <=19, PK
+--   "no_rekening"        : "RKG00000001",             // REFERENCE -> rekening
+--   "bentuk_kartu"       : "FISIK",                   // enum: FISIK|VIRTUAL
+--   "jaringan_kartu"     : "GPN_PRIVATE_LABEL",       // enum: MASTERCARD|VISA|GPN_PRIVATE_LABEL
+--   "status_kartu"       : "AKTIF",                   // enum: AKTIF|BLOKIR_SEMENTARA|BLOKIR_PERMANEN|KEDALUWARSA|BELUM_AKTIF
+--   "tanggal_terbit"     : "2023-05-12",
+--   "tanggal_kadaluarsa" : "2027-05-31"                // must be > tanggal_terbit
+-- }
+
+-- ---- `posting_bunga` (weak entity) -----------------------------------
+-- key: posting::<no_rekening>::<periode>   (composite key <-> relational PK)
+-- {
+--   "_type"           : "posting_bunga",
+--   "no_rekening"      : "RKG00000001",               // REFERENCE -> rekening
+--   "periode"          : "202610",                     // char(6) 'YYYYMM'
+--   "hari_berjalan"    : 31,                            // int, 1..366
+--   "tarif_bunga"      : 0.0025,                        // numeric(5,4), > 0
+--   "bunga_kotor"      : 10625.00,                      // numeric(18,2), >= 0
+--   "pajak_pph_final"  : 2125.00,                       // numeric(18,2), >= 0
+--   "bunga_bersih"     : 8500.00,                       // == bunga_kotor - pajak_pph_final
+--   "tanggal_posting"  : "2026-10-31T23:59:00Z"         // TO_CHAR(.., 'YYYYMM') must equal periode
+-- }
+
+-- ---- `instruksi_terjadwal` --------------------------------------------
+-- key: instruksi::<id_instruksi>
+-- {
+--   "_type"               : "instruksi_terjadwal",
+--   "id_instruksi"         : "INS00000001",             // string, <=15, PK
+--   "jenis_instruksi"      : "AFT",                      // enum: AFT|AUTODEBET|AGF|ACCOUNT_SWEEP|NAS
+--   "no_rekening_sumber"   : "RKG00000001",              // REFERENCE -> rekening
+--   "no_rekening_tujuan"   : "RKG00000002",              // REFERENCE -> rekening; null unless AFT/ACCOUNT_SWEEP; must differ from sumber
+--   "frekuensi"            : "BULANAN",                  // enum: HARIAN|MINGGUAN|BULANAN
+--   "hari_eksekusi"        : 25,                          // null if HARIAN; 1..7 if MINGGUAN; 1..31 if BULANAN
+--   "nominal_target"       : 500000.00,                   // numeric(18,2), > 0; required if jenis = AFT
+--   "status_instruksi"     : "AKTIF",                     // enum: AKTIF|DITANGGUHKAN|BERAKHIR
+--   "tanggal_mulai"        : "2024-01-25",
+--   "tanggal_selesai"      : null                          // null, or >= tanggal_mulai
+-- }
+
+-- ============================================================================
+-- 7. ASSUMPTIONS / DESIGN NOTES (see PLAN.md §5, §8, §13 for full rationale)
+-- ============================================================================
+-- - `saldo_efektif` on `rekening` is the single authoritative balance read by
+--   R-02 / R-06 / R-10 (no cross-store join with the Cassandra ledger).
+-- - `rekening.last_transaction_at` is denormalized/cached, updated by every
+--   successful W-07 transaction write, to avoid a cross-store lookup for R-04.
+-- - `nasabah.rekening_refs` is a denormalized back-reference (not required by
+--   normal form) kept in sync by W-02/W-03/W-10, purely to make R-05 a single
+--   -collection scan instead of an application-level anti-join.
+-- - Foreign-key and CHECK constraints from ddl_bri.sql are NOT enforced by
+--   Couchbase itself; they must be enforced in the application/loader layer
+--   (documented here as comments so the mapping to Part-2 stays explicit).
+-- - Pemegang_Rekening is embedded in `rekening` (aggregate = account + its
+--   holders) because every query that needs it (R-02, W-03) always starts
+--   from the account side.
+-- ============================================================================
