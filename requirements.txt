@@ -1,0 +1,2 @@
+couchbase==4.3.0
+Faker==33.1.0
