@@ -83,11 +83,15 @@ CREATE PRIMARY INDEX idx_primary_kanal      ON `bri_tabungan`.`operasional`.`kan
 
 
 -- ----------------------------------------------------------------------------
--- 4. UNIQUENESS GSIs
---    Mirrors the relational UNIQUE constraints that are not already satisfied
---    by the document key.
+-- 4. "UNIQUENESS-SUPPORT" GSIs
+--    IMPORTANT: N1QL has no `CREATE UNIQUE INDEX` statement — `UNIQUE` is a
+--    reserved word used elsewhere in the grammar (e.g. SELECT UNIQUE), and
+--    using it here is a syntax error ("UNIQUE (reserved word)"), not a
+--    permissions/runtime issue. A GSI can make a lookup fast; it cannot make
+--    it unique. These three indexes only speed up the lookup — see the
+--    enforcement pattern below for the actual UNIQUE guarantee.
 -- ----------------------------------------------------------------------------
-CREATE UNIQUE INDEX idx_nasabah_nik ON `bri_tabungan`.`operasional`.`nasabah`(nik);
+CREATE INDEX idx_nasabah_nik ON `bri_tabungan`.`operasional`.`nasabah`(nik);
                                     -- <-> nasabah.nik UNIQUE (ddl_bri.sql L48)
 
 CREATE INDEX idx_produk_nama ON `bri_tabungan`.`operasional`.`produk`(nama_produk);
@@ -95,6 +99,18 @@ CREATE INDEX idx_produk_nama ON `bri_tabungan`.`operasional`.`produk`(nama_produ
 
 CREATE INDEX idx_kanal_nama ON `bri_tabungan`.`operasional`.`kanal`(nama_kanal);
                                     -- <-> kanal_layanan.nama_kanal UNIQUE (L38)
+
+-- Enforcement pattern (do this in the loader/app, Couchbase has no native
+-- UNIQUE secondary index): insert a tiny "guard" document whose KEY *is* the
+-- unique value, in the same multi-document ACID transaction as the real
+-- document. INSERT (not UPSERT) fails with a key-exists error if the guard
+-- is already taken, so the clash is caught atomically instead of via a
+-- race-prone "SELECT then INSERT".
+--   txn.insert(nasabah_coll, "nik::" || :nik,       {"id_nasabah": :id_nasabah});
+--   txn.insert(nasabah_coll, "nasabah::" || :id,    { ...full document... });
+-- Same pattern for produk.nama_produk ("produk_nama::<nama>") and
+-- kanal.nama_kanal ("kanal_nama::<nama>") if those must also be guaranteed
+-- unique rather than just convention.
 
 
 -- ----------------------------------------------------------------------------
@@ -294,6 +310,12 @@ CREATE INDEX idx_unit_induk ON `bri_tabungan`.`operasional`.`unit_kerja`(
 -- - Foreign-key and CHECK constraints from ddl_bri.sql are NOT enforced by
 --   Couchbase itself; they must be enforced in the application/loader layer
 --   (documented here as comments so the mapping to Part-2 stays explicit).
+-- - UNIQUE constraints (nasabah.nik, produk.nama_produk, kanal.nama_kanal)
+--   are likewise not enforceable via a GSI — N1QL has no CREATE UNIQUE INDEX
+--   statement. §4's indexes only accelerate the lookup; actual uniqueness is
+--   guaranteed by a key-based "guard" document (unique value as the document
+--   key) inserted atomically alongside the real document in the same
+--   multi-document transaction.
 -- - Pemegang_Rekening is embedded in `rekening` (aggregate = account + its
 --   holders) because every query that needs it (R-02, W-03) always starts
 --   from the account side.
