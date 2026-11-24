@@ -5,3 +5,12 @@
 
 !couchbase/
 !couchbase/**
+
+!cassandra/
+!cassandra/**
+
+!docker/
+!docker/**
+
+**/__pycache__/
+**/__pycache__/**

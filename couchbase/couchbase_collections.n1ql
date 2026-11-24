@@ -1,0 +1,12 @@
+-- Jalankan ini kalau CREATE COLLECTION di couchbase_ddl.n1ql kena
+-- ERROR 12021 "Scope not found" setelah CREATE SCOPE (metadata masih propagasi).
+-- Tunggu ~10 detik setelah CREATE SCOPE sebelum menjalankan file ini.
+
+CREATE COLLECTION `bri_tabungan`.`operasional`.`produk`              IF NOT EXISTS;
+CREATE COLLECTION `bri_tabungan`.`operasional`.`unit_kerja`          IF NOT EXISTS;
+CREATE COLLECTION `bri_tabungan`.`operasional`.`kanal`               IF NOT EXISTS;
+CREATE COLLECTION `bri_tabungan`.`operasional`.`nasabah`             IF NOT EXISTS;
+CREATE COLLECTION `bri_tabungan`.`operasional`.`rekening`            IF NOT EXISTS;
+CREATE COLLECTION `bri_tabungan`.`operasional`.`kartu_debit`         IF NOT EXISTS;
+CREATE COLLECTION `bri_tabungan`.`operasional`.`posting_bunga`       IF NOT EXISTS;
+CREATE COLLECTION `bri_tabungan`.`operasional`.`instruksi_terjadwal` IF NOT EXISTS;

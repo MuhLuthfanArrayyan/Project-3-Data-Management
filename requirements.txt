@@ -1,2 +1,0 @@
-couchbase==4.6.4
-Faker==40.54.0

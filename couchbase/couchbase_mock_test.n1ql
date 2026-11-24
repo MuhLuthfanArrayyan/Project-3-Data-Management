@@ -1,0 +1,282 @@
+-- ============================================================================
+--  Couchbase — Mock Data & Smoke-Test Queries (Project Part-3, Tabungan BRI)
+-- ============================================================================
+--  Tujuan: HANYA untuk cek apakah scope/collection/index di couchbase_ddl.n1ql
+--  benar-benar bisa dipakai (insert + query jalan). Data di bawah TIDAK perlu
+--  identik dengan part-2 (itu baru wajib nanti untuk data sample final).
+--
+--  Cara pakai: jalankan DDL (couchbase_ddl.n1ql) dulu, baru file ini,
+--  statement demi statement, di Query Workbench / cbq yang sama.
+-- ============================================================================
+
+
+-- ----------------------------------------------------------------------------
+-- 0. RESET (opsional) — jalankan ini dulu kalau mau ulang dari kosong
+-- ----------------------------------------------------------------------------
+-- DELETE FROM `bri_tabungan`.`operasional`.`produk`;
+-- DELETE FROM `bri_tabungan`.`operasional`.`unit_kerja`;
+-- DELETE FROM `bri_tabungan`.`operasional`.`kanal`;
+-- DELETE FROM `bri_tabungan`.`operasional`.`nasabah`;
+-- DELETE FROM `bri_tabungan`.`operasional`.`rekening`;
+-- DELETE FROM `bri_tabungan`.`operasional`.`kartu_debit`;
+-- DELETE FROM `bri_tabungan`.`operasional`.`posting_bunga`;
+-- DELETE FROM `bri_tabungan`.`operasional`.`instruksi_terjadwal`;
+
+
+-- ----------------------------------------------------------------------------
+-- 1. MOCK DATA — produk (2), unit_kerja (2, 1 hierarki), kanal (2)
+-- ----------------------------------------------------------------------------
+INSERT INTO `bri_tabungan`.`operasional`.`produk` (KEY, VALUE) VALUES
+  ("produk::P001", {
+    "_type": "produk", "id_produk": "P001", "nama_produk": "BritAma",
+    "keluarga_produk": "BRITAMA", "segmen_tujuan": "UMUM", "mata_uang": "IDR",
+    "saldo_minimum": 50000.00, "skema_bunga": "TIER", "biaya_admin": 12000.00,
+    "status_produk": "AKTIF"
+  });
+INSERT INTO `bri_tabungan`.`operasional`.`produk` (KEY, VALUE) VALUES
+  ("produk::P002", {
+    "_type": "produk", "id_produk": "P002", "nama_produk": "Simpedes",
+    "keluarga_produk": "SIMPEDES", "segmen_tujuan": "UMUM", "mata_uang": "IDR",
+    "saldo_minimum": 25000.00, "skema_bunga": "FLAT", "biaya_admin": 5500.00,
+    "status_produk": "AKTIF"
+  });
+
+INSERT INTO `bri_tabungan`.`operasional`.`unit_kerja` (KEY, VALUE) VALUES
+  ("unit_kerja::U000", {
+    "_type": "unit_kerja", "id_unit_kerja": "U000", "nama_unit_kerja": "Kantor Pusat",
+    "jenis_unit_kerja": "HO", "alamat_lokasi": "Jakarta", "id_unit_induk": null
+  });
+INSERT INTO `bri_tabungan`.`operasional`.`unit_kerja` (KEY, VALUE) VALUES
+  ("unit_kerja::U001", {
+    "_type": "unit_kerja", "id_unit_kerja": "U001", "nama_unit_kerja": "KC Jakarta Sudirman",
+    "jenis_unit_kerja": "CABANG", "alamat_lokasi": "Jl. Sudirman No. 1", "id_unit_induk": "U000"
+  });
+
+INSERT INTO `bri_tabungan`.`operasional`.`kanal` (KEY, VALUE) VALUES
+  ("kanal::K01", {
+    "_type": "kanal", "id_kanal": "K01", "nama_kanal": "BRImo",
+    "tipe_kanal": "DIGITAL", "status_operasional": "ONLINE"
+  });
+INSERT INTO `bri_tabungan`.`operasional`.`kanal` (KEY, VALUE) VALUES
+  ("kanal::K02", {
+    "_type": "kanal", "id_kanal": "K02", "nama_kanal": "ATM BRI",
+    "tipe_kanal": "SELF_SERVICE", "status_operasional": "ONLINE"
+  });
+
+
+-- ----------------------------------------------------------------------------
+-- 2. MOCK DATA — nasabah (4; N003 sengaja TANPA rekening -> test R-05)
+-- ----------------------------------------------------------------------------
+INSERT INTO `bri_tabungan`.`operasional`.`nasabah` (KEY, VALUE) VALUES
+  ("nasabah::N001", {
+    "_type": "nasabah", "id_nasabah": "N001", "nik": "3201010101010001",
+    "nama_lengkap": "Siti Nurhaliza", "jenis_nasabah": "INDIVIDU",
+    "segmen_nasabah": "RITEL", "status_kyc": "TERVERIFIKASI",
+    "tanggal_registrasi": "2026-01-05",
+    "rekening_refs": [
+      {"no_rekening": "RKG001", "peran": "PEMEGANG_UTAMA", "penanda_utama": "Y"},
+      {"no_rekening": "RKG002", "peran": "PEMEGANG_UTAMA", "penanda_utama": "Y"}
+    ]
+  });
+INSERT INTO `bri_tabungan`.`operasional`.`nasabah` (KEY, VALUE) VALUES
+  ("nasabah::N002", {
+    "_type": "nasabah", "id_nasabah": "N002", "nik": "3201010101010002",
+    "nama_lengkap": "Budi Santoso", "jenis_nasabah": "INDIVIDU",
+    "segmen_nasabah": "RITEL", "status_kyc": "TERVERIFIKASI",
+    "tanggal_registrasi": "2026-01-10",
+    "rekening_refs": [
+      {"no_rekening": "RKG001", "peran": "PESERTA", "penanda_utama": "N"}
+    ]
+  });
+INSERT INTO `bri_tabungan`.`operasional`.`nasabah` (KEY, VALUE) VALUES
+  ("nasabah::N003", {
+    "_type": "nasabah", "id_nasabah": "N003", "nik": "3201010101010003",
+    "nama_lengkap": "Dewi Lestari", "jenis_nasabah": "INDIVIDU",
+    "segmen_nasabah": "RITEL", "status_kyc": "MENUNGGU_VERIFIKASI",
+    "tanggal_registrasi": "2026-10-01",
+    "rekening_refs": []
+  });
+INSERT INTO `bri_tabungan`.`operasional`.`nasabah` (KEY, VALUE) VALUES
+  ("nasabah::N004", {
+    "_type": "nasabah", "id_nasabah": "N004", "nik": "3201010101010004",
+    "nama_lengkap": "Agus Wijaya", "jenis_nasabah": "INDIVIDU",
+    "segmen_nasabah": "RITEL", "status_kyc": "TERVERIFIKASI",
+    "tanggal_registrasi": "2026-02-20",
+    "rekening_refs": [
+      {"no_rekening": "RKG003", "peran": "PEMEGANG_UTAMA", "penanda_utama": "Y"}
+    ]
+  });
+
+
+-- ----------------------------------------------------------------------------
+-- 3. MOCK DATA — rekening (3)
+--    RKG001 & RKG002 dimiliki N001 -> test R-02 (>1 rekening)
+--    RKG002.last_transaction_at sengaja > 90 hari -> test R-04 (idle)
+-- ----------------------------------------------------------------------------
+INSERT INTO `bri_tabungan`.`operasional`.`rekening` (KEY, VALUE) VALUES
+  ("rekening::RKG001", {
+    "_type": "rekening", "no_rekening": "RKG001", "id_produk": "P001",
+    "mata_uang": "IDR", "tanggal_buka": "2026-01-10", "tanggal_tutup": null,
+    "status_rekening": "AKTIF", "saldo_efektif": 5000000.00, "saldo_tersedia": 5000000.00,
+    "id_unit_kerja": "U001",
+    "pemegang_rekening": [
+      {"id_nasabah": "N001", "peran": "PEMEGANG_UTAMA", "penanda_utama": "Y", "tanggal_mulai": "2026-01-10"},
+      {"id_nasabah": "N002", "peran": "PESERTA", "penanda_utama": "N", "tanggal_mulai": "2026-01-10"}
+    ],
+    "last_transaction_at": "2026-11-10T08:30:00Z", "tx_count": 12
+  });
+INSERT INTO `bri_tabungan`.`operasional`.`rekening` (KEY, VALUE) VALUES
+  ("rekening::RKG002", {
+    "_type": "rekening", "no_rekening": "RKG002", "id_produk": "P002",
+    "mata_uang": "IDR", "tanggal_buka": "2026-02-01", "tanggal_tutup": null,
+    "status_rekening": "AKTIF", "saldo_efektif": 2500000.00, "saldo_tersedia": 2500000.00,
+    "id_unit_kerja": "U001",
+    "pemegang_rekening": [
+      {"id_nasabah": "N001", "peran": "PEMEGANG_UTAMA", "penanda_utama": "Y", "tanggal_mulai": "2026-02-01"}
+    ],
+    "last_transaction_at": "2026-06-01T10:00:00Z", "tx_count": 3
+  });
+INSERT INTO `bri_tabungan`.`operasional`.`rekening` (KEY, VALUE) VALUES
+  ("rekening::RKG003", {
+    "_type": "rekening", "no_rekening": "RKG003", "id_produk": "P001",
+    "mata_uang": "IDR", "tanggal_buka": "2026-02-20", "tanggal_tutup": null,
+    "status_rekening": "AKTIF", "saldo_efektif": 1000000.00, "saldo_tersedia": 1000000.00,
+    "id_unit_kerja": "U000",
+    "pemegang_rekening": [
+      {"id_nasabah": "N004", "peran": "PEMEGANG_UTAMA", "penanda_utama": "Y", "tanggal_mulai": "2026-02-20"}
+    ],
+    "last_transaction_at": "2026-11-12T09:00:00Z", "tx_count": 5
+  });
+
+
+-- ----------------------------------------------------------------------------
+-- 4. MOCK DATA — kartu_debit (2)
+--    KTM001 kedaluwarsa dalam 30 hari (dari 2026-11-16) -> test R-09
+-- ----------------------------------------------------------------------------
+INSERT INTO `bri_tabungan`.`operasional`.`kartu_debit` (KEY, VALUE) VALUES
+  ("kartu_debit::KTM001", {
+    "_type": "kartu_debit", "no_kartu": "KTM001", "no_rekening": "RKG001",
+    "bentuk_kartu": "FISIK", "jaringan_kartu": "GPN_PRIVATE_LABEL",
+    "status_kartu": "AKTIF", "tanggal_terbit": "2023-11-20", "tanggal_kadaluarsa": "2026-12-05"
+  });
+INSERT INTO `bri_tabungan`.`operasional`.`kartu_debit` (KEY, VALUE) VALUES
+  ("kartu_debit::KTM002", {
+    "_type": "kartu_debit", "no_kartu": "KTM002", "no_rekening": "RKG002",
+    "bentuk_kartu": "VIRTUAL", "jaringan_kartu": "VISA",
+    "status_kartu": "AKTIF", "tanggal_terbit": "2026-02-01", "tanggal_kadaluarsa": "2029-02-28"
+  });
+
+
+-- ----------------------------------------------------------------------------
+-- 5. MOCK DATA — posting_bunga (2) & instruksi_terjadwal (1)
+-- ----------------------------------------------------------------------------
+INSERT INTO `bri_tabungan`.`operasional`.`posting_bunga` (KEY, VALUE) VALUES
+  ("posting::RKG001::202609", {
+    "_type": "posting_bunga", "no_rekening": "RKG001", "periode": "202609",
+    "hari_berjalan": 30, "tarif_bunga": 0.0025, "bunga_kotor": 10000.00,
+    "pajak_pph_final": 2000.00, "bunga_bersih": 8000.00,
+    "tanggal_posting": "2026-09-30T23:59:00Z"
+  });
+INSERT INTO `bri_tabungan`.`operasional`.`posting_bunga` (KEY, VALUE) VALUES
+  ("posting::RKG001::202610", {
+    "_type": "posting_bunga", "no_rekening": "RKG001", "periode": "202610",
+    "hari_berjalan": 31, "tarif_bunga": 0.0025, "bunga_kotor": 10625.00,
+    "pajak_pph_final": 2125.00, "bunga_bersih": 8500.00,
+    "tanggal_posting": "2026-10-31T23:59:00Z"
+  });
+
+INSERT INTO `bri_tabungan`.`operasional`.`instruksi_terjadwal` (KEY, VALUE) VALUES
+  ("instruksi::INS001", {
+    "_type": "instruksi_terjadwal", "id_instruksi": "INS001", "jenis_instruksi": "AFT",
+    "no_rekening_sumber": "RKG001", "no_rekening_tujuan": "RKG002",
+    "frekuensi": "BULANAN", "hari_eksekusi": 25, "nominal_target": 500000.00,
+    "status_instruksi": "AKTIF", "tanggal_mulai": "2026-02-25", "tanggal_selesai": null
+  });
+
+
+-- ============================================================================
+-- 6. SMOKE-TEST QUERIES — satu per index/skenario, dengan ekspektasi hasil
+-- ============================================================================
+
+-- [R-02] Nasabah dengan >1 rekening aktif + total saldo
+--   Ekspektasi: N001, jumlah_rekening=2, total_saldo=7500000
+SELECT h.id_nasabah,
+       COUNT(DISTINCT r.no_rekening) AS jumlah_rekening,
+       SUM(r.saldo_efektif)          AS total_saldo
+FROM `bri_tabungan`.`operasional`.`rekening` r
+UNNEST r.pemegang_rekening h
+WHERE r.status_rekening = 'AKTIF'
+GROUP BY h.id_nasabah
+HAVING COUNT(DISTINCT r.no_rekening) > 1
+ORDER BY total_saldo DESC;
+
+-- [R-04] Rekening tanpa transaksi > 90 hari (dari hari ini)
+--   Ekspektasi: RKG002 (last_transaction_at 2026-06-01, > 90 hari dari 2026-11-16)
+SELECT r.no_rekening, r.saldo_efektif, r.last_transaction_at
+FROM `bri_tabungan`.`operasional`.`rekening` r
+WHERE r.status_rekening = 'AKTIF'
+  AND (r.last_transaction_at IS MISSING
+       OR STR_TO_MILLIS(r.last_transaction_at) < STR_TO_MILLIS(NOW_STR()) - (90 * 86400000))
+ORDER BY r.saldo_efektif DESC;
+
+-- [R-05] Nasabah yang belum punya rekening
+--   Ekspektasi: N003
+SELECT n.id_nasabah, n.nama_lengkap
+FROM `bri_tabungan`.`operasional`.`nasabah` n
+WHERE ARRAY_LENGTH(n.rekening_refs) = 0 OR n.rekening_refs IS MISSING;
+
+-- [R-06] Rekap jumlah rekening & total saldo per unit kerja
+--   Ekspektasi: U001 -> 2 rekening, 7500000 ; U000 -> 1 rekening, 1000000
+SELECT r.id_unit_kerja,
+       COUNT(r.no_rekening)  AS jumlah_rekening,
+       SUM(r.saldo_efektif)  AS total_saldo
+FROM `bri_tabungan`.`operasional`.`rekening` r
+WHERE r.status_rekening = 'AKTIF'
+GROUP BY r.id_unit_kerja
+ORDER BY total_saldo DESC;
+
+-- [R-07] Riwayat posting bunga rekening RKG001, terbaru dulu
+--   Ekspektasi: 2 baris, 202610 lalu 202609
+SELECT p.periode, p.bunga_kotor, p.pajak_pph_final, p.bunga_bersih
+FROM `bri_tabungan`.`operasional`.`posting_bunga` p
+WHERE p.no_rekening = 'RKG001'
+ORDER BY p.periode DESC;
+
+-- [R-08] Instruksi terjadwal yang masih aktif
+--   Ekspektasi: INS001
+SELECT i.id_instruksi, i.jenis_instruksi, i.no_rekening_sumber, i.no_rekening_tujuan
+FROM `bri_tabungan`.`operasional`.`instruksi_terjadwal` i
+WHERE i.status_instruksi = 'AKTIF';
+
+-- [R-09] Kartu debit kedaluwarsa dalam 30 hari ke depan
+--   Ekspektasi: KTM001 (2026-12-05)
+SELECT k.no_kartu, k.no_rekening, k.tanggal_kadaluarsa
+FROM `bri_tabungan`.`operasional`.`kartu_debit` k
+WHERE k.status_kartu = 'AKTIF'
+  AND k.tanggal_kadaluarsa <= DATE_ADD_STR(NOW_STR(), 30, 'day');
+
+-- [R-10] Distribusi jumlah & total saldo rekening per produk
+--   Ekspektasi: P001 -> 2 rekening (RKG001,RKG003), P002 -> 1 rekening (RKG002)
+SELECT r.id_produk,
+       COUNT(r.no_rekening)  AS jumlah_rekening,
+       SUM(r.saldo_efektif)  AS total_saldo
+FROM `bri_tabungan`.`operasional`.`rekening` r
+WHERE r.status_rekening = 'AKTIF'
+GROUP BY r.id_produk
+ORDER BY jumlah_rekening DESC;
+
+
+-- ============================================================================
+-- 7. (BONUS) Uji pola "guard document" untuk UNIQUE(nik)
+--    Lihat catatan §4/§7 di couchbase_ddl.n1ql — N1QL tidak punya UNIQUE INDEX,
+--    jadi keunikan nik ditegakkan lewat document KEY, bukan lewat GSI.
+-- ============================================================================
+-- Guard untuk nik milik N001 — sukses (key belum ada)
+INSERT INTO `bri_tabungan`.`operasional`.`nasabah` (KEY, VALUE) VALUES
+  ("nik::3201010101010001", {"id_nasabah": "N001"});
+
+-- Coba daftar nasabah BARU dengan nik yang SAMA -> HARUS gagal (key sudah ada)
+-- INSERT INTO `bri_tabungan`.`operasional`.`nasabah` (KEY, VALUE) VALUES
+--   ("nik::3201010101010001", {"id_nasabah": "N999"});
+-- Harapan: error "Duplicate Key" / LCB_KEY_EEXISTS — ini yang membuktikan
+-- constraint UNIQUE(nik) tertegakkan secara atomic di level document key.
