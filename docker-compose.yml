@@ -1,0 +1,163 @@
+# Project Part-3 — lingkungan lokal (Windows + Docker Desktop)
+#
+# Sekali jalan, siap query:
+#   docker compose up -d
+#
+# Compose ini otomatis:
+#   1. menyalakan PostgreSQL (source of truth), Cassandra, Couchbase;
+#   2. memulihkan cassandra/tabungan_bri.dump ke PostgreSQL   (one-shot `postgres-restore`);
+#   3. inisialisasi Couchbase: cluster + bucket + scope/collection + GSI
+#                                                              (one-shot `couchbase-init`);
+#   4. memuat dump ke Couchbase dan Cassandra                  (one-shot `loader`);
+#   5. BUILD INDEX Couchbase setelah data masuk                (one-shot `couchbase-build-index`).
+#
+# Setelah `docker compose ps` menunjukkan postgres/cassandra/couchbase "healthy"
+# dan service one-shot "exited (0)", kedua DB langsung bisa di-query:
+#   python run_read_queries.py                                   (dari host)
+#   docker exec bri-couchbase cbq -u Administrator -p password \
+#     -e http://localhost:8093 -f /queries_read_n1ql.n1ql
+#   docker exec -i bri-cassandra cqlsh < queries_read_cql.cql
+#
+# Versi di-pin supaya hasil benchmark sebanding antar anggota.
+# Catatan CE 7.6.x: CREATE COLLECTION lewat N1QL kena error maxTTL
+# (enterprise-only). Karena itu collection dibuat lewat couchbase-cli
+# (lihat couchbase/cb_init.sh). Alur manual lama tetap ada di SETUP_LOKAL.md.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tabungan-bri
+    environment:
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: tabungan_bri
+      TZ: UTC
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tabungan_bri"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  cassandra:
+    image: cassandra:5.0
+    container_name: bri-cassandra
+    environment:
+      MAX_HEAP_SIZE: 1G
+      HEAP_NEWSIZE: 256M
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandradata:/var/lib/cassandra
+    healthcheck:
+      # Cassandra 5.0: `nodetool statusgossip` mengeluarkan "running", bukan
+      # "Normal". Pakai `nodetool status` + token "UN" (Up/Normal) agar
+      # healthcheck benar-benar menandai node siap menerima CQL.
+      test: ["CMD-SHELL", "nodetool status | grep -qw UN"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 90s
+
+  couchbase:
+    image: couchbase/server:community-7.6.1
+    container_name: bri-couchbase
+    ports:
+      - "8091:8091"
+      - "8092:8092"
+      - "8093:8093"
+      - "8094:8094"
+      - "8095:8095"
+      - "8096:8096"
+      - "8097:8097"
+      - "11210:11210"
+      - "11211:11211"
+    volumes:
+      - couchbasedata:/opt/couchbase/var
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8091/ui/index.html"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  # ---- one-shot: pulihkan dump ke PostgreSQL -----------------------------
+  postgres-restore:
+    image: postgres:16-alpine
+    container_name: bri-pg-restore
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: password
+      PGHOST: postgres
+      PGUSER: postgres
+    volumes:
+      - ./cassandra/tabungan_bri.dump:/dump/tabungan_bri.dump:ro
+      - ./docker/pg_restore.sh:/scripts/pg_restore.sh:ro
+    entrypoint: ["/bin/sh", "/scripts/pg_restore.sh"]
+
+  # ---- one-shot: inisialisasi Couchbase (cluster/bucket/collection/GSI) --
+  couchbase-init:
+    image: couchbase/server:community-7.6.1
+    container_name: bri-couchbase-init
+    depends_on:
+      couchbase:
+        condition: service_healthy
+    environment:
+      CB_HOST: couchbase:8091
+      CB_USER: Administrator
+      CB_PASS: password
+      CB_BUCKET: bri_tabungan
+    volumes:
+      - ./couchbase:/cb:ro
+    entrypoint: ["/bin/sh", "/cb/cb_init.sh"]
+
+  # ---- one-shot: muat dump -> Couchbase + Cassandra ----------------------
+  loader:
+    build: ./docker/loader
+    container_name: bri-loader
+    depends_on:
+      postgres-restore:
+        condition: service_completed_successfully
+      couchbase-init:
+        condition: service_completed_successfully
+      cassandra:
+        condition: service_healthy
+    environment:
+      PG_DSN: "host=postgres port=5432 dbname=tabungan_bri user=postgres password=password"
+      CASSANDRA_HOST: cassandra
+      CASSANDRA_PORT: "9042"
+      CB_CONN_STR: couchbase://couchbase
+      CB_USERNAME: Administrator
+      CB_PASSWORD: password
+      # dump tetap sama setiap run -> upsert ulang aman (lewati guard seed_couchbase)
+      CB_ALLOW_RELOAD: "1"
+    volumes:
+      - ./:/app
+    working_dir: /app
+    command:
+      - sh
+      - -c
+      - python couchbase/load_couchbase_from_pg.py && python cassandra/load_cassandra.py
+
+  # ---- one-shot: BUILD INDEX Couchbase setelah data masuk ----------------
+  couchbase-build-index:
+    image: couchbase/server:community-7.6.1
+    container_name: bri-couchbase-build-index
+    depends_on:
+      loader:
+        condition: service_completed_successfully
+    volumes:
+      - ./couchbase:/cb:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - cbq -u Administrator -p password -e http://couchbase:8093 -f /cb/build_indexes.n1ql
+
+volumes:
+  pgdata:
+  cassandradata:
+  couchbasedata:
