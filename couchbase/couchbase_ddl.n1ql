@@ -13,7 +13,7 @@
 --
 --  Scope of this file: COUCHBASE ONLY. The transaction ledger
 --  (Transaksi_Tabungan) is NOT here — per the plan it lives in Cassandra
---  (keyspace bri_ledger, table transaksi_by_rekening /
+--  (keyspace bri_tabungan, table transaksi_by_rekening /
 --  transaksi_by_kanal_periode), because it is a high-volume, append-only,
 --  time-ordered workload that Couchbase documents are a poor fit for.
 --  Pemegang_Rekening (the M:N holder relationship) is embedded inside
@@ -70,9 +70,9 @@ CREATE COLLECTION `bri_tabungan`.`operasional`.`instruksi_terjadwal` IF NOT EXIS
 --    in §5, so an unindexed/un-anticipated query fails loudly (missing index)
 --    instead of silently full-scanning at benchmark time.
 -- ----------------------------------------------------------------------------
-CREATE PRIMARY INDEX idx_primary_produk     ON `bri_tabungan`.`operasional`.`produk`;
-CREATE PRIMARY INDEX idx_primary_unit_kerja ON `bri_tabungan`.`operasional`.`unit_kerja`;
-CREATE PRIMARY INDEX idx_primary_kanal      ON `bri_tabungan`.`operasional`.`kanal`;
+CREATE PRIMARY INDEX IF NOT EXISTS idx_primary_produk     ON `bri_tabungan`.`operasional`.`produk`;
+CREATE PRIMARY INDEX IF NOT EXISTS idx_primary_unit_kerja ON `bri_tabungan`.`operasional`.`unit_kerja`;
+CREATE PRIMARY INDEX IF NOT EXISTS idx_primary_kanal      ON `bri_tabungan`.`operasional`.`kanal`;
 
 -- Dev/debug convenience only — leave OUT of the benchmarked/graded run:
 -- CREATE PRIMARY INDEX idx_primary_nasabah            ON `bri_tabungan`.`operasional`.`nasabah`;

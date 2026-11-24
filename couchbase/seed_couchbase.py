@@ -52,7 +52,7 @@ from couchbase.options import ClusterOptions
 # ----------------------------------------------------------------------------
 CB_CONN_STR = "couchbase://localhost"
 CB_USERNAME = "Administrator"
-CB_PASSWORD = "Password123"
+CB_PASSWORD = "password"
 CB_BUCKET = "bri_tabungan"
 CB_SCOPE = "operasional"
 
@@ -339,7 +339,7 @@ def backfill_kartu_debit():
 # 8. transaksi_tabungan — DIJALANKAN APA ADANYA (urutan random harus identik
 #    dgn seed_bri.py) tapi TIDAK ditulis ke Couchbase. Hanya field turunan
 #    pada `rekening` yang disimpan (saldo akhir, last_transaction_at, tx_count).
-#    Transaksi mentahnya adalah tugas seeder Cassandra (bri_ledger), terpisah.
+#    Transaksi mentahnya adalah tugas seeder Cassandra (bri_tabungan), terpisah.
 # ----------------------------------------------------------------------------
 def backfill_transaksi_derived():
     total_tx = 0
